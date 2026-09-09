@@ -15,11 +15,13 @@ dependencies = [
   "cryptography>=42.0.0",
   "starlette>=0.37.0",
   "uvicorn>=0.27.0",
+  "python-multipart>=0.0.9",
 ]
 
 [project.scripts]
 lore-auth = "lore_auth.__main__:main"
 lore-auth-admin = "lore_auth.admin_cli:main"
+lore-auth-menu = "lore_auth.menu:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -169,3 +169,22 @@ python -m unittest tests.test_jwt_and_acl -v
 - Free / Tailscale MagicDNS HTTPS only
 - No LoreGUI / lore patches
 - No OIDC / Entra / SQLite passwords â€” `users.json` access codes only
+
+## Interactive admin menu
+
+Simple numbered menus on top of `lore-auth-admin` (does not replace the CLI flags):
+
+```powershell
+cd C:\GitHub\LoreAuth
+.\.venv\Scripts\Activate.ps1
+python -m lore_auth.menu
+# or: lore-auth-menu
+```
+
+Flow example: `1. Enter new user` ? `1. Regular` / `2. Admin` ? username ? display name ? repo id (defaults to team3) ? creates the user and prints the secret once.
+
+## Setup Lore (class repo)
+
+From the menu, choose `7. Setup Lore`. It runs `lore repository list` against your VM (default `lore://100.107.34.33:41337`), lets you pick the class repo by **name** (e.g. `lore-test-project`), and saves `dev-data/lore-setup.json`. After that, **Enter new user** uses the friendly name — students/admins never type the hex id.
+
+Requires the `lore` CLI on PATH (or `LORE_EXE`).

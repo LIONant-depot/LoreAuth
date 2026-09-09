@@ -6,12 +6,42 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+from .detect import detect_init
 from .jwks import generate_rsa_keypair, write_jwks
 from .users import UsersConfig, generate_secret, new_user_skeleton
 
 
 def cmd_init(args: argparse.Namespace) -> int:
+    if getattr(args, "auto", False):
+        try:
+            det = detect_init(
+                out=Path(args.out) if getattr(args, "out", None) else None,
+                env=getattr(args, "env", None) or "team3",
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"auto-detect failed: {exc}", file=sys.stderr)
+            return 1
+        print("Auto-detected from Tailscale:")
+        print(f"  out      = {det.out}")
+        print(f"  issuer   = {det.issuer}")
+        print(f"  audience = {det.audience}")
+        print(f"  env      = {det.env}")
+        print(f"  dns      = {det.dns_name}")
+        args = SimpleNamespace(
+            out=str(det.out),
+            issuer=det.issuer,
+            audience=det.audience,
+            env=det.env,
+            ttl_hours=getattr(args, "ttl_hours", 12) or 12,
+            force=bool(getattr(args, "force", False)),
+        )
+
+    if not getattr(args, "out", None) or not getattr(args, "issuer", None):
+        print("init requires --out and --issuer (or use --auto)", file=sys.stderr)
+        return 1
+
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     users_path = out / "users.json"
@@ -122,17 +152,29 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="lore-auth-admin")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    init = sub.add_parser("init", help="Create users.json skeleton + RSA keypair + JWKS")
-    init.add_argument("--out", required=True, help="Output directory (e.g. dev-data)")
+    init = sub.add_parser(
+        "init",
+        help="Create users.json skeleton + RSA keypair + JWKS",
+    )
+    init.add_argument(
+        "--auto",
+        action="store_true",
+        help="Detect issuer/audience/out from Tailscale MagicDNS (recommended on the VM)",
+    )
+    init.add_argument(
+        "--out",
+        default=None,
+        help="Output directory (default with --auto: /opt/lore-auth/data or ./dev-data)",
+    )
     init.add_argument(
         "--issuer",
-        required=True,
-        help="Issuer URL, e.g. https://lore-auth.<tailnet>.ts.net",
+        default=None,
+        help="Issuer URL (not needed with --auto)",
     )
     init.add_argument(
         "--audience",
         default="lore-host.<tailnet>.ts.net,.<tailnet>.ts.net",
-        help="Comma-separated aud values",
+        help="Comma-separated aud values (overridden by --auto)",
     )
     init.add_argument("--env", default="team3")
     init.add_argument("--ttl-hours", type=int, default=12)

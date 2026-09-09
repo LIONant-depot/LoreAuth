@@ -100,17 +100,17 @@ def create_app(
         )
 
     async def login_post(request: Request) -> Response:
+        # Prefer raw urlencoded parse so we do not require python-multipart
+        # for the normal HTML form (application/x-www-form-urlencoded).
         content_type = request.headers.get("content-type", "")
-        if (
-            "application/x-www-form-urlencoded" in content_type
-            or "multipart/form-data" in content_type
-        ):
+        body = (await request.body()).decode("utf-8", errors="replace")
+        if "multipart/form-data" in content_type:
+            # Optional path; needs python-multipart if used.
             form = await request.form()
             session_code = str(form.get("session") or "")
             username = str(form.get("username") or "").strip() or None
             secret = str(form.get("secret") or "")
         else:
-            body = (await request.body()).decode("utf-8", errors="replace")
             qs = parse_qs(body)
             session_code = (qs.get("session") or [""])[0]
             username = (qs.get("username") or [""])[0].strip() or None
