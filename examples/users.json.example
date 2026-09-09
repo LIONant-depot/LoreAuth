@@ -1,0 +1,19 @@
+{
+  "issuer": "https://lore-auth.<tailnet>.ts.net",
+  "audience": ["<lore-host-domain>", ".<lore-host-domain>"],
+  "env": "team3",
+  "token_ttl_hours": 12,
+  "codes": {
+    "tomas": {
+      "secret": "<long-random-access-code>",
+      "enabled": true,
+      "expires": "2027-06-30T00:00:00Z",
+      "sub": "c7be2a0c-0a63-4d79-a203-718b68b875de",
+      "name": "Tomas",
+      "preferred_username": "tomas",
+      "repositories": {
+        "01a066401a037f92bf808b2282c34bb3": ["read", "write", "admin"]
+      }
+    }
+  }
+}

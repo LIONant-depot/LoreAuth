@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lore-auth"
+version = "0.1.0"
+description = "Free Tailscale MagicDNS UCS auth for LoreGUI (access codes + JWKS)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "grpcio>=1.60.0",
+  "grpcio-tools>=1.60.0",
+  "PyJWT[crypto]>=2.8.0",
+  "cryptography>=42.0.0",
+  "starlette>=0.37.0",
+  "uvicorn>=0.27.0",
+]
+
+[project.scripts]
+lore-auth = "lore_auth.__main__:main"
+lore-auth-admin = "lore_auth.admin_cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

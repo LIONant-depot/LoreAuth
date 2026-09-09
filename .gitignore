@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+dev-data/
+*.pem
+users.json
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+src/lore_auth/generated/

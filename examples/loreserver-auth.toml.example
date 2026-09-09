@@ -1,0 +1,14 @@
+# Overlay / hand-edit into loreserver config. No LoreGUI patches required.
+# Replace <tailnet> and <lore-host-domain> with your Tailscale MagicDNS names.
+
+[environment.endpoint]
+auth_url = "ucs-auth://lore-auth.<tailnet>.ts.net"
+# equivalently:
+# auth_url = "https://lore-auth.<tailnet>.ts.net"
+
+[server.auth]
+jwt_issuer = "https://lore-auth.<tailnet>.ts.net"
+jwt_audience = ["<lore-host-domain>"]
+
+[server.auth.jwk]
+endpoint = "https://lore-auth.<tailnet>.ts.net/.well-known/jwks.json"
