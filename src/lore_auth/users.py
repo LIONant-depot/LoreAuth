@@ -36,6 +36,22 @@ class UserRecord:
         return now >= exp
 
 
+
+def _as_audience_list(raw: Any) -> List[str]:
+    """Normalize users.json audience to a list of domain roots."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [a.strip() for a in raw.split(",") if a.strip()]
+    if isinstance(raw, list):
+        out: List[str] = []
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+        return out
+    return []
+
+
 @dataclass
 class UsersConfig:
     path: Path
@@ -69,7 +85,7 @@ class UsersConfig:
         return cls(
             path=p,
             issuer=str(raw.get("issuer") or ""),
-            audience=list(raw.get("audience") or []),
+            audience=_as_audience_list(raw.get("audience")),
             env=str(raw.get("env") or "team3"),
             token_ttl_hours=int(raw.get("token_ttl_hours") or 12),
             codes=codes,

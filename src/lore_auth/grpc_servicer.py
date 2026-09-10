@@ -63,14 +63,33 @@ class UrcAuthServicer:
         sess = self.sessions.get(request.session_code)
         if sess is None:
             context.abort(grpc.StatusCode.NOT_FOUND, "unknown or expired session")
-        if sess.client_state != (request.client_state or ""):
+        req_state = request.client_state or ""
+        if sess.client_state and req_state and sess.client_state != req_state:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "client_state mismatch")
         if not sess.completed or not sess.user_token_jwt:
             return auth_api_pb2.GetAuthSessionResponse()
+        # lore-transport maps UserToken.expires_at -> expires_ms (UNIX ms).
+        exp_s = int(sess.expires_at or 0)
+        exp_ms = exp_s * 1000
+        aud = None
+        try:
+            claims = pyjwt.decode(
+                sess.user_token_jwt, options={"verify_signature": False}
+            )
+            aud = claims.get("aud")
+        except Exception:  # noqa: BLE001
+            pass
+        log.info(
+            "GetAuthSession completed session=%s. user_id=%s expires_at_ms=%s aud=%s",
+            request.session_code[:8],
+            sess.user_id,
+            exp_ms,
+            aud,
+        )
         return auth_api_pb2.GetAuthSessionResponse(
             user_token=auth_api_pb2.UserToken(
                 user_token=sess.user_token_jwt,
-                expires_at=int(sess.expires_at or 0),
+                expires_at=exp_ms,
                 user_id=sess.user_id or "",
                 user_name=sess.user_name or "",
             )
@@ -107,10 +126,11 @@ class UrcAuthServicer:
 
         token = self.minter.mint_authz(user, list(request.resource_id))
         unverified = pyjwt.decode(token, options={"verify_signature": False})
+        exp_s = int(unverified.get("exp") or 0)
         return auth_api_pb2.ExchangeUserTokenForMultiresourceTokenResponse(
             token=auth_api_pb2.UserToken(
                 user_token=token,
-                expires_at=int(unverified.get("exp") or 0),
+                expires_at=exp_s * 1000,
                 user_id=user.sub,
                 user_name=user.name,
             )
@@ -147,9 +167,34 @@ class UrcAuthServicer:
         return auth_api_pb2.LookupUserPermissionsResponse()
 
     def GetUserInfo(self, request, context):
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details("GetUserInfo not implemented")
-        return auth_api_pb2.GetUserInfoResponse()
+        # Lore Account / identity loaders call this after login.
+        wanted = list(request.user_id or [])
+        out = []
+        for user in self.users.codes.values():
+            if not user.enabled:
+                continue
+            if wanted and user.sub not in wanted and user.preferred_username not in wanted:
+                continue
+            out.append(
+                auth_api_pb2.UserInfo(
+                    user_id=user.sub,
+                    display_name=user.name or user.preferred_username,
+                )
+            )
+        if wanted and not out:
+            # Fall back: still return empty list rather than UNIMPLEMENTED
+            return auth_api_pb2.GetUserInfoResponse(user_info=[])
+        if not wanted:
+            # No filter - return all enabled users (small access-code deployments)
+            out = [
+                auth_api_pb2.UserInfo(
+                    user_id=u.sub,
+                    display_name=u.name or u.preferred_username,
+                )
+                for u in self.users.codes.values()
+                if u.enabled
+            ]
+        return auth_api_pb2.GetUserInfoResponse(user_info=out)
 
     def GetUserId(self, request, context):
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)

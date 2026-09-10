@@ -1,4 +1,4 @@
-﻿# LoreAuth installation guide (Team3)
+# LoreAuth installation guide (Team3)
 
 Living guide for students and instructors. Updated as we install on the class Tailscale VM.
 
@@ -220,14 +220,21 @@ endpoint = "https://team3.tail1504a4.ts.net/.well-known/jwks.json"
 
 ---
 
-## 10. Student connect flow — TODO
+## 10. Student connect flow (proven)
 
-1. Join Tailscale tailnet `tail1504a4`  
-2. Open LoreGUI → Connect to Lore remote  
-3. Browser opens access-code page → enter secret  
-4. LoreGUI shows connected  
+1. Install Tailscale and join the class tailnet (MagicDNS on).
+2. Open LoreGUI → **Set Up Repository** → **Connect to a Lore Server** (not host).
+3. Prefer **Open existing** / **Open Working Tree** if you already cloned; otherwise Clone with:
+   `lore://<this-VM-MagicDNS>:41337/<repo-name>`
+   Prefer MagicDNS over a bare Tailscale IP — JWT `aud` is MagicDNS-oriented.
+4. Confirm the title bar is no longer `no repository open` and Branches shows `main`.
+5. **Account** → Browser sign-in → Server URL:
+   `lore://<this-VM-MagicDNS>:41337`
+   Enter the access code. Success = green **Signed in (server-verified)**.
+6. Commit normally. Do **not** put `identity = "..."` in `.lore/config.toml`.
 
-Fill exact Lore URL + screenshots after first end-to-end success.
+If Account shows red `No auth endpoint available` before a repo is open, that can be a neutral empty state on older LoreGUI builds — open the working tree first, then Account.
+
 
 ---
 
@@ -327,3 +334,15 @@ Both servers run in the **background**. The menu detects PIDs under `/opt/lore-a
 Logs: `/opt/lore-auth/log/auth.log` and `lore.log`.
 
 Setup authentication server also writes/merges `loreserver-auth.toml` using this machine's MagicDNS name.
+
+## Account Connect (LoreGUI identity)
+
+Open a working tree first (**Set Up Repository** → Connect → Open existing), then use **Account**.
+
+1. Working-tree `remote_url` and Account Server URL should both use MagicDNS:
+   `lore://<this-machine-MagicDNS>:41337`
+2. Account → Browser sign-in → access code. Success = green **Signed in (server-verified)**.
+3. Red `No auth endpoint available` with **no repository open** is often a loader quirk, not a failed login — open the repo, then retry Account.
+4. JWT `aud` must cover the MagicDNS hostname (init/`--auto` sets MagicDNS + `.tailnet` + Tailscale IPs). Restart auth after updating lore-auth so new tokens pick up minting fixes.
+5. Never hardcode a classmate hostname in student docs; each VM uses its own MagicDNS name.
+

@@ -28,6 +28,14 @@ class TokenMinter:
     def _base_claims(self, user: UserRecord, ttl_hours: Optional[int] = None) -> Dict[str, Any]:
         now = int(time.time())
         ttl = int((ttl_hours if ttl_hours is not None else self.users.token_ttl_hours) * 3600)
+        # Lore verify_jwt_usage_for_remote matches remote hostname against iss+aud.
+        # iss is usually https://{host} and does not match hostname-only remotes,
+        # so always include the issuer host (and any configured aud roots).
+        aud = [a for a in list(self.users.audience) if a]
+        iss = (self.users.issuer or "").rstrip("/")
+        host = iss.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+        if host and host not in aud:
+            aud.insert(0, host)
         return {
             "iss": self.users.issuer,
             "sub": user.sub,
@@ -36,7 +44,7 @@ class TokenMinter:
             "is_service_account": False,
             "iat": now,
             "exp": now + ttl,
-            "aud": list(self.users.audience),
+            "aud": aud,
             "env": self.users.env,
             "idp": "access-code",
         }
