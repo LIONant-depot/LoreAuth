@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 from . import admin_cli
 from .detect import detect_init
@@ -41,8 +44,16 @@ class Paths:
         )
 
     @property
+    def loreserver_config_dir(self) -> Path:
+        return self.users.parent / "loreserver-config"
+
+    @property
+    def loreserver_config_file(self) -> Path:
+        return self.loreserver_config_dir / "local.toml"
+
+    @property
     def loreserver_overlay(self) -> Path:
-        return self.users.parent / "loreserver-auth.toml"
+        return self.loreserver_config_file
 
     @property
     def lore_config_hint(self) -> Path:
@@ -159,7 +170,7 @@ def _sudo(cmd: list[str]) -> None:
 
 
 def tls_ready(paths: Paths) -> bool:
-    return paths.cert.is_file() and paths.key.is_file()
+    return paths.cert.is_file() and paths.key.is_file() and os.access(paths.cert, os.R_OK) and os.access(paths.key, os.R_OK)
 
 
 def overlay_ready(paths: Paths) -> bool:
@@ -215,165 +226,93 @@ def find_loreserver_bin() -> str | None:
 
 
 def resolve_lore_config_path(paths: Paths) -> Path | None:
-    """Return loreserver --config path (file OR directory)."""
-    env = os.environ.get("LORESERVER_CONFIG")
-    if env:
-        p = Path(env)
-        if p.exists():
-            return p
+    """Return a config directory, never a TOML file."""
+    candidates = []
+    if os.environ.get("LORESERVER_CONFIG"):
+        candidates.append(Path(os.environ["LORESERVER_CONFIG"]))
     if paths.lore_config_hint.is_file():
-        p = Path(paths.lore_config_hint.read_text(encoding="utf-8").strip())
-        if p.exists():
-            return p
-    for cand in (
-        Path("/opt/loreserver/config"),
-        Path("/opt/loreserver/config/local.toml"),
-        Path("/opt/lore/loreserver.toml"),
-        Path("/opt/loreserver/config.toml"),
-        Path("/etc/loreserver/config.toml"),
-        Path.home() / "loreserver.toml",
-        Path.home() / "lore" / "server.toml",
-    ):
-        if cand.exists():
-            return cand
+        candidates.append(Path(paths.lore_config_hint.read_text(encoding="utf-8").strip()))
+    candidates.extend((paths.loreserver_config_dir, Path("/opt/loreserver/config")))
+    for candidate in candidates:
+        candidate = candidate.parent if candidate.is_file() else candidate
+        if candidate.is_dir():
+            return candidate
     return None
 
 
 def lore_merge_target(config_path: Path) -> Path:
-    """Where to write/merge auth TOML. Config dir -> local.toml inside it."""
-    if config_path.is_dir():
-        return config_path / "local.toml"
-    return config_path
+    return config_path / "local.toml" if config_path.is_dir() else config_path
 
 
 def lore_config_arg(config_path: Path) -> str:
-    """Argument for loreserver --config (prefers the directory form)."""
-    if config_path.is_dir():
-        return str(config_path)
-    if config_path.name == "local.toml" and config_path.parent.is_dir():
-        return str(config_path.parent)
-    return str(config_path)
+    return str(config_path.parent if config_path.is_file() else config_path)
 
+
+def _remote_host(remote_url: str) -> str:
+    host = urlsplit(remote_url).hostname
+    if not host:
+        raise ValueError(f"Invalid Lore remote URL: {remote_url}")
+    return host
+
+
+def _ensure_users_audience(users_path: Path, audience: str) -> None:
+    data = json.loads(users_path.read_text(encoding="utf-8"))
+    values = data.get("audience")
+    if isinstance(values, str):
+        values = [v.strip() for v in values.split(",") if v.strip()]
+    if not isinstance(values, list):
+        raise RuntimeError("users.json must contain an audience string or list")
+    if audience not in values:
+        values.append(audience)
+    data["audience"] = values
+    users_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _check_started(spec: ServiceSpec, label: str) -> None:
+    time.sleep(1.5)
+    if is_running(spec):
+        return
+    tail = ""
+    if spec.log_file.is_file():
+        tail = "\n".join(spec.log_file.read_text(encoding="utf-8", errors="replace").splitlines()[-20:])
+    raise RuntimeError(f"{label} exited during startup. Log: {spec.log_file}\n{tail}")
 
 def action_setup_auth_server(paths: Paths) -> None:
-    print()
-    print("Setup authentication server")
+    print("\nSetup authentication server")
     try:
         ensure_service_dirs()
-    except Exception as exc:  # noqa: BLE001
-        print(f"Could not prepare run/log dirs: {exc}")
-        _pause()
-        return
-    try:
-        det = detect_init(out=paths.users.parent)
-        dns = det.dns_name
-    except Exception as exc:  # noqa: BLE001
-        print(f"Could not read Tailscale MagicDNS name: {exc}")
-        _pause()
-        return
-
+        dns = detect_init(out=paths.users.parent).dns_name.rstrip(".")
+    except Exception as exc:
+        print(f"Setup failed: {exc}"); _pause(); return
     print(f"This machine MagicDNS name: {dns}")
-
     if not tls_ready(paths):
-        print()
-        print("Before continuing: Tailscale Admin → DNS → Enable HTTPS")
+        if paths.cert.exists() or paths.key.exists():
+            print("TLS files exist but are not readable by this user."); _pause(); return
+        print("Before continuing: enable Tailscale HTTPS certificates.")
+        try: input("Press Enter after HTTPS Certificates is enabled...")
+        except EOFError: pass
+        home=Path.home()
+        for item in (home/f"{dns}.crt", home/f"{dns}.key"): item.unlink(missing_ok=True)
         try:
-            input("Press Enter after HTTPS Certificates is enabled...")
-        except EOFError:
-            pass
-        home = Path.home()
-        for p in (home / f"{dns}.crt", home / f"{dns}.key"):
-            if p.exists():
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
-        print("Requesting Tailscale certificate (sudo may ask for a password)…")
-        try:
-            proc = subprocess.run(
-                ["sudo", "tailscale", "cert", dns],
-                cwd=str(home),
-                check=False,
-            )
-            if proc.returncode != 0:
-                raise RuntimeError(f"tailscale cert failed (exit {proc.returncode})")
-            src_crt = home / f"{dns}.crt"
-            src_key = home / f"{dns}.key"
-            if not src_crt.is_file() or not src_key.is_file():
-                raise RuntimeError("cert files not found after tailscale cert")
-            _sudo(["mkdir", "-p", str(DEFAULT_CERTS)])
-            _sudo(["mv", str(src_crt), str(paths.cert)])
-            _sudo(["mv", str(src_key), str(paths.key)])
-            _sudo(["chmod", "600", str(paths.key)])
-            user = os.environ.get("USER") or os.environ.get("LOGNAME") or "root"
-            _sudo(["chown", "-R", f"{user}:{user}", str(DEFAULT_CERTS)])
-        except Exception as exc:  # noqa: BLE001
-            print(f"Failed: {exc}")
-            _pause()
-            return
-        print("TLS cert installed.")
-    else:
-        print("TLS cert already present.")
-
-    overlay = write_loreserver_auth_toml(
-        paths.loreserver_overlay,
-        dns_name=dns,
-        grpc_port=GRPC_PORT,
-        http_port=HTTP_PORT,
-    )
-    print(f"\nWrote {overlay}")
-    print(overlay.read_text(encoding="utf-8"))
-
-    # Remember loreserver main config path if we can find / ask once
-    cfg = resolve_lore_config_path(paths)
-    if cfg is None:
-        print("Could not auto-find the main loreserver config file.")
-        typed = _ask("Path to loreserver config TOML (or leave empty to skip)", default="")
-        if typed:
-            cfg = Path(typed)
-            if cfg.is_file():
-                paths.lore_config_hint.write_text(str(cfg.resolve()) + "\n", encoding="utf-8")
-            else:
-                print(f"Not found: {cfg}")
-                cfg = None
-    else:
-        paths.lore_config_hint.write_text(str(cfg.resolve()) + "\n", encoding="utf-8")
-        print(f"Detected loreserver config: {cfg}")
-
-    if cfg and cfg.exists():
-        merge_path = lore_merge_target(cfg)
-        if not merge_path.is_file() and cfg.is_dir():
-            merge_path.write_text("", encoding="utf-8")
-        if not merge_path.is_file():
-            print(f"Merge target missing: {merge_path}")
-            _pause()
-            return
-        # Append overlay marker if not already present
-        text = merge_path.read_text(encoding="utf-8")
-        marker = "# BEGIN lore-auth-generated"
-        block = (
-            f"\n{marker}\n"
-            + paths.loreserver_overlay.read_text(encoding="utf-8")
-            + "# END lore-auth-generated\n"
-        )
-        if marker in text:
-            pre = text.split(marker, 1)[0].rstrip()
-            # drop old generated section
-            if "# END lore-auth-generated" in text:
-                post = text.split("# END lore-auth-generated", 1)[1]
-            else:
-                post = ""
-            merge_path.write_text(pre + "\n" + block + post.lstrip("\n"), encoding="utf-8")
-        else:
-            merge_path.write_text(text.rstrip() + "\n" + block, encoding="utf-8")
-        print(f"Merged auth settings into {merge_path}")
-        print("If loreserver is already running, use Shut down / Start lore server to apply.")
-    else:
-        print("Skipped merging into loreserver config (path unknown).")
-        print(f"Manually merge {overlay} into loreserver, or re-run Setup and enter the path.")
-
-    _pause()
-
+            proc=subprocess.run(["sudo","tailscale","cert",dns],cwd=home,check=False)
+            if proc.returncode: raise RuntimeError(f"tailscale cert failed ({proc.returncode})")
+            crt,key=home/f"{dns}.crt",home/f"{dns}.key"
+            if not crt.is_file() or not key.is_file(): raise RuntimeError("certificate files not found")
+            user=os.environ.get("USER") or os.environ.get("LOGNAME") or "root"
+            _sudo(["mkdir","-p",str(DEFAULT_CERTS)]); _sudo(["mv",str(crt),str(paths.cert)]); _sudo(["mv",str(key),str(paths.key)])
+            _sudo(["chown",f"root:{user}",str(paths.cert),str(paths.key)]); _sudo(["chmod","644",str(paths.cert)]); _sudo(["chmod","640",str(paths.key)])
+        except Exception as exc:
+            print(f"Failed: {exc}"); _pause(); return
+    lore_setup=_load_setup(paths.users)
+    remote_url=getattr(lore_setup,"remote_url",None) or DEFAULT_REMOTE
+    try:
+        audience=_remote_host(remote_url)
+        _ensure_users_audience(paths.users,audience)
+        out=write_loreserver_auth_toml(paths.loreserver_config_file,dns_name=dns,audiences=[audience],grpc_port=GRPC_PORT,http_port=HTTP_PORT)
+        paths.lore_config_hint.write_text(str(paths.loreserver_config_dir.resolve())+"\n",encoding="utf-8")
+    except Exception as exc:
+        print(f"Could not generate config: {exc}"); _pause(); return
+    print(f"Wrote {out}"); print(f"Lore remote audience: {audience}"); print(f"Config directory: {paths.loreserver_config_dir}"); _pause()
 
 def action_start_auth(paths: Paths) -> None:
     try:
@@ -415,9 +354,11 @@ def action_start_auth(paths: Paths) -> None:
         str(HTTP_PORT),
     ]
     try:
-        pid = start_background(ServiceSpec.auth(), argv)
+        spec = ServiceSpec.auth()
+        pid = start_background(spec, argv)
+        _check_started(spec, "Authentication server")
         print(f"Authentication server started in background (pid {pid}).")
-        print(f"Log: {ServiceSpec.auth().log_file}")
+        print(f"Log: {spec.log_file}")
     except Exception as exc:  # noqa: BLE001
         print(f"Failed to start: {exc}")
     _pause()
@@ -433,50 +374,24 @@ def action_stop_auth() -> None:
 
 
 def action_start_lore(paths: Paths) -> None:
+    try: ensure_service_dirs()
+    except Exception as exc:
+        print(f"Cannot prepare run/log dirs: {exc}"); _pause(); return
+    binary=find_loreserver_bin()
+    if not binary:
+        print("`loreserver` not found on PATH."); _pause(); return
+    config_dir=paths.loreserver_config_dir.resolve()
+    if paths.loreserver_config_file.is_file():
+        paths.lore_config_hint.write_text(str(config_dir)+"\n",encoding="utf-8")
+        argv=[binary,"--config",str(config_dir)]; label=str(config_dir)
+    else:
+        argv=[binary]; label="built-in defaults (bootstrap only)"
+        print("Starting Lore Server in bootstrap mode for first repository setup.")
     try:
-        ensure_service_dirs()
-    except Exception as exc:  # noqa: BLE001
-        print(f"Cannot prepare run/log dirs: {exc}")
-        _pause()
-        return
-    bin_path = find_loreserver_bin()
-    if not bin_path:
-        print("`loreserver` not found on PATH.")
-        print("Install Lore server tools or add them to PATH, then try again.")
-        _pause()
-        return
-    cfg = resolve_lore_config_path(paths)
-    if not cfg:
-        print("loreserver config path unknown.")
-        typed = _ask(
-            "Path to loreserver --config (file or directory)",
-            default="/opt/loreserver/config",
-        )
-        if not typed or not Path(typed).exists():
-            print("No valid config path.")
-            _pause()
-            return
-        cfg = Path(typed)
-    paths.lore_config_hint.write_text(str(cfg.resolve()) + "\n", encoding="utf-8")
-
-    # Ensure auth overlay exists / merged
-    if not overlay_ready(paths):
-        print("Run Setup authentication server first (writes auth TOML).")
-        _pause()
-        return
-
-    argv = [bin_path, "--config", lore_config_arg(cfg)]
-    # Some builds use different flags; try --config first
-    try:
-        pid = start_background(ServiceSpec.lore(), argv)
-        print(f"Lore server started in background (pid {pid}).")
-        print(f"Log: {ServiceSpec.lore().log_file}")
-        print(f"Config: {cfg}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"Failed to start with `--config`: {exc}")
-        print("Check the log and your loreserver CLI flags.")
+        spec=ServiceSpec.lore(); pid=start_background(spec,argv); _check_started(spec,"Lore server")
+        print(f"Lore server started in background (pid {pid})."); print(f"Log: {spec.log_file}"); print(f"Config: {label}")
+    except Exception as exc: print(f"Failed to start Lore Server: {exc}")
     _pause()
-
 
 def action_stop_lore() -> None:
     try:
